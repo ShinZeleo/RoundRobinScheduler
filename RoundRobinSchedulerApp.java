@@ -37,10 +37,11 @@ public class RoundRobinSchedulerApp extends JFrame {
     });
     private final JSpinner quantumSpinner = new JSpinner(new SpinnerNumberModel(4,1,1000,1));
     private final JComboBox<String> datasetCombo = new JComboBox<>(new String[]{
-            "Dataset 1. BT seimbang",
-            "Dataset 2. BT bervariasi",
-            "Dataset 3. AT dan BT berbeda",
-            "Dataset 4. Proses pendek datang terlambat"
+            "Tabel 1. BT seimbang",
+            "Tabel 2. BT bervariasi",
+            "Tabel 3. AT dan BT berbeda",
+            "Tabel 4. Proses pendek datang terlambat",
+            "Tabel 5. AT acak, proses dominan"
     });
 
     public RoundRobinSchedulerApp(){
@@ -122,6 +123,7 @@ public class RoundRobinSchedulerApp extends JFrame {
                     case 1 -> loadDataset2();
                     case 2 -> loadDataset3();
                     case 3 -> loadDataset4();
+                    case 4 -> loadDataset5();
                 }
             }
         });
@@ -463,7 +465,7 @@ public class RoundRobinSchedulerApp extends JFrame {
         resultModel.addRow(new Object[]{ "Rata-rata", "", "", "", awt, att });
     }
 
-    
+
     /**
      * Menampilkan data Gantt dalam bentuk teks sederhana.
      * Format setiap baris. [start..end] pid
@@ -510,9 +512,22 @@ public class RoundRobinSchedulerApp extends JFrame {
         inputModel.addRow(new Object[]{"p2",0,20});
         inputModel.addRow(new Object[]{"p3",5,2});
         inputModel.addRow(new Object[]{"p4",7,3});
+        inputModel.addRow(new Object[]{"p5",4,7});
         quantumSpinner.setValue(4);
         algoCombo.setSelectedIndex(0);
     }
+
+    private void loadDataset5(){
+        inputModel.setRowCount(0);
+        inputModel.addRow(new Object[]{"p1", 0, 25});
+        inputModel.addRow(new Object[]{"p2", 3,  5});
+        inputModel.addRow(new Object[]{"p3", 4,  7});
+        inputModel.addRow(new Object[]{"p4", 10, 3});
+        inputModel.addRow(new Object[]{"p5", 12, 18});
+        quantumSpinner.setValue(5);
+        algoCombo.setSelectedIndex(0);
+    }
+
 
     // ===== JTable zebra sederhana
     static class StripedTable extends JTable {
