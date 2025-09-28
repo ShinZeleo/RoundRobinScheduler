@@ -24,7 +24,9 @@ public class RoundRobinSchedulerApp extends JFrame {
     private final DefaultTableModel inputModel  = new DefaultTableModel(new Object[]{"Proses","Arrival","Burst"},0);
     private final JTable inputTable = new StripedTable(inputModel);
 
-    private final DefaultTableModel resultModel = new DefaultTableModel(new Object[]{"Proses","AT","BT","WT","TAT","CT"},0);
+    private final DefaultTableModel resultModel =
+            new DefaultTableModel(new Object[]{"Proses","AT","BT","Finish","WT","TT"}, 0);
+
     private final JTable resultTable = new StripedTable(resultModel);
 
     private final JTextArea ganttText = new JTextArea(8, 60);
@@ -435,33 +437,33 @@ public class RoundRobinSchedulerApp extends JFrame {
      *  WT  = TAT − BT
      * Baris terakhir menampilkan rata-rata WT dan rata-rata TAT.
      */
-    private void fillResultTable(List<Proc> procs) {
-        resultModel.setRowCount(0); // kosongkan isi tabel hasil
+    private void fillResultTable(List<Proc> procs){
+        resultModel.setRowCount(0);
 
         double sumWT = 0;
-        double sumTAT = 0;
+        double sumTT = 0;
 
-        // Tambah satu baris hasil per proses
         for (Proc p : procs) {
-            int tat = p.ct - p.at;   // turnaround time
-            int wt  = tat - p.bt;    // waiting time
+            int finish = p.ct;           // CT = waktu selesai
+            int tt = finish - p.at;      // TT = Turnaround Time
+            int wt = tt - p.bt;          // WT = Waiting Time
 
-            sumWT  += wt;
-            sumTAT += tat;
+            sumWT += wt;
+            sumTT += tt;
 
-            resultModel.addRow(new Object[]{ p.pid, p.at, p.bt, wt, tat, p.ct });
+            // urutan kolom: Proses | AT | BT | Finish | WT | TT
+            resultModel.addRow(new Object[]{ p.pid, p.at, p.bt, finish, wt, tt });
         }
 
-        // Hindari bagi nol. Secara normal procs tidak kosong karena sudah dicek sebelumnya
         int n = procs.size();
-        String avgWT  = n > 0 ? String.format(Locale.US, "%.2f", sumWT  / n) : "-";
-        String avgTAT = n > 0 ? String.format(Locale.US, "%.2f", sumTAT / n) : "-";
+        String awt = n > 0 ? String.format(Locale.US, "%.2f", sumWT / n) : "-";
+        String att = n > 0 ? String.format(Locale.US, "%.2f", sumTT / n) : "-";
 
-        // Baris ringkasan rata-rata
-        resultModel.addRow(new Object[]{ "Rata-rata", "", "", avgWT, avgTAT, "" });
+        // baris ringkasan
+        resultModel.addRow(new Object[]{ "Rata-rata", "", "", "", awt, att });
     }
 
-
+    
     /**
      * Menampilkan data Gantt dalam bentuk teks sederhana.
      * Format setiap baris. [start..end] pid
