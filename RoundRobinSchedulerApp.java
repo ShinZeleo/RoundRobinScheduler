@@ -9,6 +9,7 @@ import java.awt.*;
 import java.awt.event.ItemEvent;
 import java.util.*;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class RoundRobinSchedulerApp extends JFrame {
 
@@ -277,75 +278,52 @@ public class RoundRobinSchedulerApp extends JFrame {
      *  Setiap proses dapat jatah waktu sebesar quantum.
      *  Jika belum selesai maka ditaruh kembali ke belakang queue.
      */
-    private List<Seg> rrStandard(List<Proc> procs,int quantum){
-        List<Seg> segs=new ArrayList<>();
+// RR standar ala RoundRobinSwing: maju 1-satuan saat idle, enqueue kedatangan sebelum dan sesudah slice
+    private List<Seg> rrStandard(List<Proc> procs, int quantum) {
+        // salin dan urutkan berdasar AT
+        List<Proc> jobQueue = new ArrayList<>(procs);
+        jobQueue.sort(Comparator.comparingInt(p -> p.at));
+        Queue<Proc> rq = new ArrayDeque<>();
+        List<Seg> segs = new ArrayList<>();
 
-        int n = procs.size();
-        int time = minArrival(procs);   // waktu simulasi saat ini
-        int completed = 0;              // jumlah proses yang sudah selesai
+        int time = 0, completed = 0;
 
-        ArrayDeque<Proc> rq = new ArrayDeque<>(); // ready queue
-        boolean[] seen = new boolean[n];          // penanda proses sudah pernah dimasukkan ke queue
-
-        while(true){
-            // Masukkan proses yang sudah datang ke ready queue.
-            // Gunakan "seen" agar tiap proses hanya dimasukkan sekali untuk momen AT awalnya.
-            for(int i=0;i<n;i++){
-                Proc p=procs.get(i);
-                if(!seen[i] && p.at<=time){
-                    rq.add(p);
-                    seen[i]=true;
-                }
+        while (completed < procs.size()) {
+            // masukkan yang sudah tiba
+            Iterator<Proc> it = jobQueue.iterator();
+            while (it.hasNext()) {
+                Proc p = it.next();
+                if (p.at <= time) { rq.add(p); it.remove(); }
+                else break;
+            }
+            // kalau belum ada yang siap, maju 1 waktu
+            if (rq.isEmpty()) {
+                if (jobQueue.isEmpty()) break;
+                time++;
+                continue;
             }
 
-            // Jika queue kosong, loncat ke kedatangan berikutnya.
-            // Ini berarti CPU idle di rentang [time..nextArrival). Dalam versi ini idle tidak dicatat sebagai segmen.
-            if(rq.isEmpty()){
-                OptionalInt next=nextArrivalAfter(procs,time);
-                if(next.isPresent()){
-                    time=next.getAsInt();
-                    continue;
-                } else {
-                    break; // tidak ada proses tersisa
-                }
+            Proc cur = rq.poll();
+            int start = time;
+            int run = Math.min(quantum, cur.rt);
+            time += run;
+            cur.rt -= run;
+            segs.add(new Seg(cur.pid, start, time));
+
+            // kedatangan selama slice ini
+            it = jobQueue.iterator();
+            while (it.hasNext()) {
+                Proc p = it.next();
+                if (p.at <= time) { rq.add(p); it.remove(); }
+                else break;
             }
 
-            // Ambil proses di depan queue
-            Proc cur=rq.poll();
-            if(cur.rt==0) continue; // berjaga jika ada yang sudah nol
-
-            // Jalankan proses selama min(quantum, sisa)
-            int run=Math.min(quantum,cur.rt);
-            int start=time, end=time+run;
-
-            // Update state proses
-            cur.rt-=run;
-            time=end;
-
-            // Catat segmen eksekusi untuk Gantt
-            segs.add(new Seg(cur.pid,start,end));
-
-            // Masukkan proses yang mungkin baru datang selama eksekusi barusan
-            for(int i=0;i<n;i++){
-                Proc p=procs.get(i);
-                if(!seen[i] && p.at<=time){
-                    rq.add(p);
-                    seen[i]=true;
-                }
-            }
-
-            // Jika masih ada sisa maka proses kembali ke belakang queue
-            if(cur.rt>0){
-                rq.add(cur);
-            } else {
-                // Sudah selesai. Simpan completion time dan cek penghentian loop
-                cur.ct=time;
-                completed++;
-                if(completed==n) break;
-            }
+            if (cur.rt > 0) rq.add(cur);
+            else { cur.ct = time; completed++; }
         }
         return segs;
     }
+
 
     /** RR pengembangan. Versi dengan anti back-to-back saat ready > 1.
      *  Gagasan utama.
@@ -363,87 +341,66 @@ public class RoundRobinSchedulerApp extends JFrame {
      *  Keluaran.
      *  - daftar segmen eksekusi untuk Gantt. setiap segmen berisi pid. start. end.
      */
+// RR pengembangan ala RoundRobinSwing: dua fase
     private List<Seg> rrDeveloped(List<Proc> procs, int baseQ) {
         List<Seg> segs = new ArrayList<>();
-        int time = minArrival(procs);   // waktu simulasi saat ini
-        int q = baseQ;                  // quantum aktif. dapat berubah saat putaran selesai
-        Set<String> served = new HashSet<>(); // proses yang sudah kebagian di putaran berjalan
-        String lastPid = null;          // proses yang terakhir dieksekusi. dipakai untuk anti back-to-back
 
-        while (true) {
-            // Kumpulkan proses yang siap di waktu "time". Hanya yang rt > 0
-            List<Proc> ready = new ArrayList<>();
-            for (Proc p : procs) if (p.at <= time && p.rt > 0) ready.add(p);
+        // siapkan antrian pekerjaan terurut AT
+        List<Proc> jobQueue = new ArrayList<>(procs);
+        jobQueue.sort(Comparator.comparingInt(p -> p.at));
+        Queue<Proc> rq = new ArrayDeque<>();
 
-            // Jika belum ada yang siap. lompat ke kedatangan berikutnya
-            if (ready.isEmpty()) {
-                OptionalInt next = nextArrivalAfter(procs, time);
-                if (next.isPresent()) {
-                    time = next.getAsInt();
-                    continue;
-                } else {
-                    break; // semua proses selesai
-                }
+        int time = 0;
+        int q = baseQ;
+
+        // ===== FASE 1: semua proses dapat jatah sekali dengan q =====
+        Set<Proc> servedOnce = new HashSet<>();
+        while (servedOnce.size() < procs.size()) {
+            // masukkan yang sudah tiba
+            Iterator<Proc> it = jobQueue.iterator();
+            while (it.hasNext()) {
+                Proc p = it.next();
+                if (p.at <= time && !rq.contains(p)) { rq.add(p); it.remove(); }
+                else break;
             }
 
-            // Urutkan kandidat. sisa terkecil dulu. lalu AT. lalu pid
-            ready.sort(Comparator.<Proc>comparingInt(p -> p.rt)
-                    .thenComparingInt(p -> p.at)
-                    .thenComparing(p -> p.pid));
-
-            // Pilih proses yang akan dieksekusi
-            Proc cur = ready.get(0);
-
-            // Anti back-to-back saat antrian lebih dari satu proses
-            if (ready.size() > 1) {
-                // Prioritas 1. bukan lastPid dan belum kebagian pada putaran ini
-                for (Proc p : ready) {
-                    if ((lastPid == null || !p.pid.equals(lastPid)) && !served.contains(p.pid)) {
-                        cur = p;
-                        break;
-                    }
-                }
-                // Jika masih sama dengan lastPid. ambil kandidat pertama yang bukan lastPid
-                if (cur.pid.equals(lastPid)) {
-                    for (Proc p : ready) {
-                        if (!p.pid.equals(lastPid)) { cur = p; break; }
-                    }
-                }
-                // Jika semua sama dengan lastPid. biarkan apa adanya
+            if (rq.isEmpty()) {
+                if (jobQueue.isEmpty() || servedOnce.size() == procs.size()) break;
+                time++;
+                continue;
             }
 
-            // Eksekusi proses terpilih
-            int run = Math.min(q, cur.rt);  // jatah eksekusi adalah min(q. sisa)
+            Proc cur = rq.poll();
             int start = time;
-            int end = time + run;
+            int run = Math.min(q, cur.rt);
+            time += run;
+            cur.rt -= run;
+            segs.add(new Seg(cur.pid, start, time));
 
-            cur.rt -= run;                  // kurangi sisa
-            time = end;                     // majukan waktu
-            segs.add(new Seg(cur.pid, start, end)); // catat segmen untuk Gantt
+            servedOnce.add(cur);
+            if (cur.rt <= 0) cur.ct = time; // boleh selesai di fase 1
+        }
 
-            served.add(cur.pid);            // tandai sudah kebagian
-            lastPid = cur.pid;              // simpan untuk aturan anti back-to-back
+        // ===== FASE 2: urut sisa terkecil, habiskan dengan jatah 2*q per iterasi =====
+        int dq = q * 2;
+        List<Proc> remaining = procs.stream()
+                .filter(p -> p.rt > 0)
+                .sorted(Comparator.comparingInt(p -> p.rt))
+                .collect(Collectors.toList());
 
-            if (cur.rt == 0) cur.ct = time; // jika selesai. isi completion time
-
-            // Cek akhir putaran. Putaran selesai jika semua proses aktif saat ini
-            // sudah ada dalam set "served". Setelah selesai. gandakan quantum dan mulai putaran baru
-            List<Proc> active = new ArrayList<>();
-            for (Proc p : procs) if (p.rt > 0 && p.at <= time) active.add(p);
-
-            boolean roundDone = !active.isEmpty();
-            if (roundDone) {
-                for (Proc p : active) {
-                    if (!served.contains(p.pid)) { roundDone = false; break; }
-                }
+        for (Proc p : remaining) {
+            while (p.rt > 0) {
+                int start = time;
+                int run = Math.min(dq, p.rt);
+                time += run;
+                p.rt -= run;
+                segs.add(new Seg(p.pid, start, time));
             }
-            if (roundDone) {
-                q *= 2;         // quantum berikutnya lebih besar. context switch cenderung berkurang
-                served.clear(); // reset penanda putaran
-            }
+            p.ct = time;
         }
         return segs;
     }
+
 
 
     /**
