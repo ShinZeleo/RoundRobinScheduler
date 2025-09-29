@@ -347,70 +347,104 @@ public class RoundRobinSchedulerApp extends JFrame {
         return segs;
     }
 
-    /** RR pengembangan.
-     *  Dua ide utama.
-     *  1. Setiap giliran memilih proses dengan sisa waktu paling kecil di antara yang siap.
-     *     Ini membuat proses pendek cepat selesai walau tetap dibatasi oleh quantum aktif.
-     *  2. Quantum digandakan setiap kali semua proses aktif pada periode itu
-     *     sudah minimal mendapat jatah sekali. Variabel served mencatat siapa saja
-     *     yang sudah kebagian dalam putaran saat ini.
+    /** RR pengembangan. Versi dengan anti back-to-back saat ready > 1.
+     *  Gagasan utama.
+     *  1. Seleksi proses memakai sisa eksekusi paling kecil di antara yang siap.
+     *     Jika ada seri. lihat AT lebih kecil. lalu pid untuk stabilitas.
+     *  2. Quantum digandakan setiap kali semua proses aktif pada periode berjalan
+     *     sudah minimal mendapat jatah sekali. Set "served" mencatat siapa saja yang sudah kebagian.
+     *  3. Anti back-to-back. Jika jumlah ready > 1. hindari memilih proses yang sama dua kali berturut-turut
+     *     agar eksekusi tampak lebih bergiliran. Aturan ini tidak mengubah fairness dan tetap menghormati sisa terpendek.
+     *
+     *  Parameter.
+     *  - procs. daftar proses dengan at. bt. rt. ct.
+     *  - baseQ. quantum awal.
+     *
+     *  Keluaran.
+     *  - daftar segmen eksekusi untuk Gantt. setiap segmen berisi pid. start. end.
      */
-    private List<Seg> rrDeveloped(List<Proc> procs,int baseQ){
-        List<Seg> segs=new ArrayList<>();
-        int time=minArrival(procs); // waktu mulai simulasi
-        int q=baseQ;                // quantum aktif, nanti bisa digandakan
-        Set<String> served=new HashSet<>(); // proses yang sudah kebagian di putaran berjalan
+    private List<Seg> rrDeveloped(List<Proc> procs, int baseQ) {
+        List<Seg> segs = new ArrayList<>();
+        int time = minArrival(procs);   // waktu simulasi saat ini
+        int q = baseQ;                  // quantum aktif. dapat berubah saat putaran selesai
+        Set<String> served = new HashSet<>(); // proses yang sudah kebagian di putaran berjalan
+        String lastPid = null;          // proses yang terakhir dieksekusi. dipakai untuk anti back-to-back
 
-        while(true){
-            // Kumpulkan proses yang sudah siap di waktu "time"
-            List<Proc> ready=new ArrayList<>();
-            for(Proc p:procs) if(p.at<=time && p.rt>0) ready.add(p);
+        while (true) {
+            // Kumpulkan proses yang siap di waktu "time". Hanya yang rt > 0
+            List<Proc> ready = new ArrayList<>();
+            for (Proc p : procs) if (p.at <= time && p.rt > 0) ready.add(p);
 
-            // Jika belum ada yang siap, loncat ke kedatangan berikutnya
-            if(ready.isEmpty()){
-                OptionalInt next=nextArrivalAfter(procs,time);
-                if(next.isPresent()){
-                    time=next.getAsInt();
+            // Jika belum ada yang siap. lompat ke kedatangan berikutnya
+            if (ready.isEmpty()) {
+                OptionalInt next = nextArrivalAfter(procs, time);
+                if (next.isPresent()) {
+                    time = next.getAsInt();
                     continue;
                 } else {
-                    break;
+                    break; // semua proses selesai
                 }
             }
 
-            // Pilih proses dengan sisa eksekusi paling kecil.
-            // Jika sama. lihat AT lebih kecil dulu. lalu urut pid untuk stabilitas.
-            ready.sort(Comparator.<Proc>comparingInt(p->p.rt)
-                    .thenComparingInt(p->p.at)
-                    .thenComparing(p->p.pid));
-            Proc cur=ready.get(0);
+            // Urutkan kandidat. sisa terkecil dulu. lalu AT. lalu pid
+            ready.sort(Comparator.<Proc>comparingInt(p -> p.rt)
+                    .thenComparingInt(p -> p.at)
+                    .thenComparing(p -> p.pid));
 
-            // Eksekusi dengan quantum aktif atau sisa yang lebih kecil
-            int run=Math.min(q,cur.rt);
-            int start=time, end=time+run;
-            cur.rt-=run;
-            time=end;
+            // Pilih proses yang akan dieksekusi
+            Proc cur = ready.get(0);
 
-            segs.add(new Seg(cur.pid,start,end));
-            served.add(cur.pid);
-            if(cur.rt==0) cur.ct=time;
-
-            // Cek apakah satu "putaran" selesai.
-            // Putaran dianggap selesai jika semua proses yang masih aktif di waktu sekarang
-            // sudah muncul di set "served". Ketika selesai, gandakan quantum.
-            List<Proc> active=new ArrayList<>();
-            for(Proc p:procs) if(p.rt>0 && p.at<=time) active.add(p);
-
-            boolean roundDone=!active.isEmpty();
-            if(roundDone){
-                for(Proc p:active) if(!served.contains(p.pid)){ roundDone=false; break; }
+            // Anti back-to-back saat antrian lebih dari satu proses
+            if (ready.size() > 1) {
+                // Prioritas 1. bukan lastPid dan belum kebagian pada putaran ini
+                for (Proc p : ready) {
+                    if ((lastPid == null || !p.pid.equals(lastPid)) && !served.contains(p.pid)) {
+                        cur = p;
+                        break;
+                    }
+                }
+                // Jika masih sama dengan lastPid. ambil kandidat pertama yang bukan lastPid
+                if (cur.pid.equals(lastPid)) {
+                    for (Proc p : ready) {
+                        if (!p.pid.equals(lastPid)) { cur = p; break; }
+                    }
+                }
+                // Jika semua sama dengan lastPid. biarkan apa adanya
             }
-            if(roundDone){
-                q*=2;          // quantum baru menjadi dua kali lipat
-                served.clear();// mulai putaran baru
+
+            // Eksekusi proses terpilih
+            int run = Math.min(q, cur.rt);  // jatah eksekusi adalah min(q. sisa)
+            int start = time;
+            int end = time + run;
+
+            cur.rt -= run;                  // kurangi sisa
+            time = end;                     // majukan waktu
+            segs.add(new Seg(cur.pid, start, end)); // catat segmen untuk Gantt
+
+            served.add(cur.pid);            // tandai sudah kebagian
+            lastPid = cur.pid;              // simpan untuk aturan anti back-to-back
+
+            if (cur.rt == 0) cur.ct = time; // jika selesai. isi completion time
+
+            // Cek akhir putaran. Putaran selesai jika semua proses aktif saat ini
+            // sudah ada dalam set "served". Setelah selesai. gandakan quantum dan mulai putaran baru
+            List<Proc> active = new ArrayList<>();
+            for (Proc p : procs) if (p.rt > 0 && p.at <= time) active.add(p);
+
+            boolean roundDone = !active.isEmpty();
+            if (roundDone) {
+                for (Proc p : active) {
+                    if (!served.contains(p.pid)) { roundDone = false; break; }
+                }
+            }
+            if (roundDone) {
+                q *= 2;         // quantum berikutnya lebih besar. context switch cenderung berkurang
+                served.clear(); // reset penanda putaran
             }
         }
         return segs;
     }
+
 
     /**
      * Mengisi Completion Time (CT) tiap proses berdasarkan segmen eksekusi yang tercatat.
