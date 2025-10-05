@@ -274,6 +274,34 @@ public class RoundRobinSwing extends JFrame {
         ds5.add(new Object[]{"p4", 10, 3});
         ds5.add(new Object[]{"p5", 12, 18});
         predefinedDatasets.put("Dataset 5", new Dataset(ds5, 5));
+
+        // Dataset 6 (Data seimbang tanpa Arrival Time)
+        List<Object[]> ds6 = new ArrayList<>();
+        ds6.add(new Object[]{"p1", 0, 12});
+        ds6.add(new Object[]{"p2", 0, 8});
+        ds6.add(new Object[]{"p3", 0, 5});
+        ds6.add(new Object[]{"p4", 0, 2});
+        ds6.add(new Object[]{"p5", 0, 1});
+        predefinedDatasets.put("Data Seimbang (tanpa AT)", new Dataset(ds6, 3));
+
+// Dataset 7 (Data jurnal perbandingan)
+        List<Object[]> ds7 = new ArrayList<>();
+        ds7.add(new Object[]{"p1", 0, 12});
+        ds7.add(new Object[]{"p2", 2, 8});
+        ds7.add(new Object[]{"p3", 3, 5});
+        ds7.add(new Object[]{"p4", 5, 2});
+        ds7.add(new Object[]{"p5", 9, 1});
+        predefinedDatasets.put("Data Jurnal (AT dan BT berbeda)", new Dataset(ds7, 3));
+
+// Dataset 8 (Data relevan preemption)
+        List<Object[]> ds8 = new ArrayList<>();
+        ds8.add(new Object[]{"p1", 0, 10});
+        ds8.add(new Object[]{"p2", 2, 4});
+        ds8.add(new Object[]{"p3", 4, 6});
+        ds8.add(new Object[]{"p4", 6, 3});
+        ds8.add(new Object[]{"p5", 8, 2});
+        predefinedDatasets.put("Data Relevan (Preemption AT)", new Dataset(ds8, 3));
+
     }
 
     private void loadDataset(String datasetName) {
@@ -345,76 +373,151 @@ public class RoundRobinSwing extends JFrame {
         return new SimulationResult(processList, ganttChart, awt, atat);
     }
 
-    private SimulationResult runEnhancedRoundRobin(List<Process> processes, int quantum) {
-        List<Process> processList = processes.stream()
+    private void admitArrivals(List<Process> job, ArrayDeque<Process> rq, int time) {
+        Iterator<Process> it = job.iterator();
+        while (it.hasNext()) {
+            Process p = it.next();
+            if (p.arrivalTime <= time) {
+                rq.add(p);
+                it.remove();
+            }
+        }
+    }
+
+    // ==========================================================
+// Versi runEnhancedRoundRobin lengkap yang pakai fungsi di atas
+// ==========================================================
+    private SimulationResult runEnhancedRoundRobin(List<Process> processes, int baseQ) {
+        // clone input dan urutkan AT
+        List<Process> ps = processes.stream()
                 .map(p -> new Process(p.name, p.arrivalTime, p.burstTime))
                 .sorted(Comparator.comparingInt(p -> p.arrivalTime))
                 .collect(Collectors.toList());
 
-        List<GanttBlock> ganttChart = new ArrayList<>();
-        int currentTime = 0;
+        List<GanttBlock> gantt = new ArrayList<>();
+        int time = ps.stream().mapToInt(p -> p.arrivalTime).min().orElse(0);
 
-        Set<Process> executedInFirstCycle = new HashSet<>();
-        Queue<Process> readyQueue = new LinkedList<>();
-        List<Process> jobQueue = new ArrayList<>(processList);
+        // ========= SIKLUS 1. RR berbasis AT. boleh preempt saat ada arrival baru =========
+        Set<String> servedFirst = new HashSet<>();
+        ArrayDeque<Process> rq = new ArrayDeque<>();
+        List<Process> job = new ArrayList<>(ps); // yang belum masuk ready
 
-        while (executedInFirstCycle.size() < processList.size()) {
-            Iterator<Process> iterator = jobQueue.iterator();
-            while (iterator.hasNext()) {
-                Process p = iterator.next();
-                if (p.arrivalTime <= currentTime && !readyQueue.contains(p)) {
-                    readyQueue.add(p);
-                    iterator.remove();
-                }
-            }
+        // panggil helper untuk menambahkan proses yang sudah datang
+        admitArrivals(job, rq, time);
 
-            if (readyQueue.isEmpty()) {
-                if (jobQueue.isEmpty() || processList.stream().allMatch(executedInFirstCycle::contains))
-                    break;
-                currentTime++;
+        while (servedFirst.size() < ps.size()) {
+            if (rq.isEmpty()) {
+                int nextAT = job.stream().mapToInt(p -> p.arrivalTime).min().orElse(Integer.MAX_VALUE);
+                if (nextAT == Integer.MAX_VALUE) break;
+                time = nextAT;
+                admitArrivals(job, rq, time);
                 continue;
             }
 
-            Process cur = readyQueue.poll();
-            int start = currentTime;
-            int exec = Math.min(quantum, cur.remainingBurstTime);
-            currentTime += exec;
-            cur.remainingBurstTime -= exec;
-            ganttChart.add(new GanttBlock(cur.name, start, currentTime));
+            Process cur = rq.poll();
+            if (cur.remainingBurstTime <= 0) continue;
 
-            executedInFirstCycle.add(cur);
+            int q = baseQ;
+            int sliceLeft = q;
 
-            if (cur.remainingBurstTime <= 0) {
-                cur.completionTime = currentTime;
+            while (sliceLeft > 0 && cur.remainingBurstTime > 0) {
+                OptionalInt nextAT = job.stream().mapToInt(p -> p.arrivalTime).min();
+                int run;
+                if (nextAT.isPresent() && nextAT.getAsInt() > time && nextAT.getAsInt() - time < sliceLeft) {
+                    run = Math.min(cur.remainingBurstTime, nextAT.getAsInt() - time);
+                } else {
+                    run = Math.min(cur.remainingBurstTime, sliceLeft);
+                }
+
+                if (run == 0) {
+                    time = nextAT.getAsInt();
+                    admitArrivals(job, rq, time);
+                    break;
+                }
+
+                int start = time, end = time + run;
+                cur.remainingBurstTime -= run;
+                time = end;
+                gantt.add(new GanttBlock(cur.name, start, end));
+                sliceLeft -= run;
+
+                admitArrivals(job, rq, time);
+                if (!job.isEmpty()) {
+                    int nearest = job.stream().mapToInt(p -> p.arrivalTime).min().orElse(Integer.MAX_VALUE);
+                    if (nearest == time) {
+                        admitArrivals(job, rq, time);
+                        break;
+                    }
+                }
             }
+
+            servedFirst.add(cur.name);
+            if (cur.remainingBurstTime > 0) rq.add(cur);
+            else cur.completionTime = time;
+
+            admitArrivals(job, rq, time);
         }
 
-        int doubledQuantum = quantum * 2;
-        List<Process> remaining = processList.stream()
-                .filter(p -> p.remainingBurstTime > 0)
-                .sorted(Comparator.comparingInt(p -> p.remainingBurstTime))
-                .collect(Collectors.toList());
+// ========= SIKLUS 2+. quantum digandakan. pilih sisa terpendek =========
+        int q = baseQ * 2;
 
-        for (Process p : remaining) {
-            while (p.remainingBurstTime > 0) {
-                int start = currentTime;
-                int exec = Math.min(doubledQuantum, p.remainingBurstTime);
-                currentTime += exec;
-                p.remainingBurstTime -= exec;
-                ganttChart.add(new GanttBlock(p.name, start, currentTime));
+        while (true) {
+            // snapshot time agar final untuk lambda
+            final int tNow = time;
+
+            List<Process> active = ps.stream()
+                    .filter(p -> p.remainingBurstTime > 0 && p.arrivalTime <= tNow)
+                    .collect(Collectors.toList());
+
+            // jika tidak ada yang aktif, loncat ke arrival berikutnya atau selesai
+            if (active.isEmpty()) {
+                final int tN = time; // snapshot lagi untuk lambda di bawah
+                OptionalInt nextAT = ps.stream()
+                        .filter(p -> p.remainingBurstTime > 0 && p.arrivalTime > tN)
+                        .mapToInt(p -> p.arrivalTime)
+                        .min();
+
+                if (nextAT.isPresent()) {
+                    time = nextAT.getAsInt();
+                    continue;
+                }
+                break; // semua selesai
             }
-            p.completionTime = currentTime;
+
+            // jalankan satu putaran. semua aktif minimal 1 kali
+            Set<String> served = new HashSet<>();
+            while (served.size() < active.size()) {
+                Process cur = active.stream()
+                        .filter(p -> p.remainingBurstTime > 0)
+                        .min(Comparator.comparingInt((Process p) -> p.remainingBurstTime)
+                                .thenComparingInt(p -> p.arrivalTime)
+                                .thenComparing(p -> p.name))
+                        .orElse(null);
+                if (cur == null) break;
+
+                int run = Math.min(q, cur.remainingBurstTime);
+                int start = time, end = time + run;
+                cur.remainingBurstTime -= run;
+                time = end;
+                gantt.add(new GanttBlock(cur.name, start, end));
+                served.add(cur.name);
+                if (cur.remainingBurstTime == 0) cur.completionTime = time;
+            }
+
+            // akhir siklus. gandakan quantum
+            q *= 2;
         }
 
-        for (Process p : processList) {
+
+        // hitung TAT dan WT
+        for (Process p : ps) {
             p.turnaroundTime = p.completionTime - p.arrivalTime;
             p.waitingTime = p.turnaroundTime - p.burstTime;
         }
 
-        double awt = processList.stream().mapToInt(p -> p.waitingTime).average().orElse(0.0);
-        double atat = processList.stream().mapToInt(p -> p.turnaroundTime).average().orElse(0.0);
-
-        return new SimulationResult(processList, ganttChart, awt, atat);
+        double awt = ps.stream().mapToInt(p -> p.waitingTime).average().orElse(0);
+        double atat = ps.stream().mapToInt(p -> p.turnaroundTime).average().orElse(0);
+        return new SimulationResult(ps, gantt, awt, atat);
     }
 
     public static void main(String[] args) {
